@@ -18,7 +18,8 @@ import payment_service as finance
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / config.DATABASE_FILE
 app = Flask(__name__, static_folder="static", static_url_path="/static")
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+if config.TRUST_PROXY:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.config['MAX_CONTENT_LENGTH']=65536
 lock = threading.RLock()
 reservations = ReservationService(BASE / config.RESERVATION_DATABASE)
@@ -227,7 +228,27 @@ def rows_as_dict(sheet_name, limit=100):
 def auth_kind():
     return 'admin' if request.path.startswith('/auth/admin/') else 'user'
 
-def cookie_name(kind):return 'sandlock_'+kind+'_session'
+def cookie_name(kind):
+    if kind=='admin':return 'sandlock_admin_session'
+    # New name avoids ambiguity with old, unpartitioned user cookies.
+    return ('__Host-' if config.AUTH_COOKIE_SECURE else '')+'sandlock_user_session_v2'
+
+def session_cookie(response,kind,token='',clear=False):
+    same_site='None' if kind=='user' and config.AUTH_COOKIE_SECURE else 'Lax'
+    response.set_cookie(cookie_name(kind),token,httponly=True,secure=config.AUTH_COOKIE_SECURE,
+                        samesite=same_site,max_age=0 if clear else (28800 if kind=='admin' else 604800),
+                        expires=0 if clear else None,path='/')
+    if kind=='user' and config.AUTH_COOKIE_SECURE and config.AUTH_COOKIE_PARTITIONED:
+        # Compatible with the existing Flask/Werkzeug versions; never expose the token in JSON.
+        cookies=response.headers.getlist('Set-Cookie')
+        response.headers.setlist('Set-Cookie',[value+'; Partitioned' if value.startswith(cookie_name(kind)+'=') else value for value in cookies])
+
+def user_boundary(path):
+    return path.startswith('/auth/user/') or (path.startswith('/api/v1/') and path!='/api/v1/legacy-reservations/import')
+
+def trusted_origin(origin,path):
+    return origin==request.host_url.rstrip('/') or (user_boundary(path) and origin in config.RESERVATION_ORIGINS)
+
 
 def json_body():
     body=request.get_json(silent=True)
@@ -241,6 +262,13 @@ def protect_request():
     protected = path.startswith(('/api/', '/download/')) or path in ('/', '/static/index.html')
     auth_path = path.startswith('/auth/')
     if request.method == 'OPTIONS':
+        origin=request.headers.get('Origin')
+        if origin and (protected or auth_path):
+            if not trusted_origin(origin,path):raise ReservationError('Untrusted request origin',403)
+            if request.headers.get('Access-Control-Request-Method','GET') not in ('GET','POST','HEAD'):
+                raise ReservationError('Unsupported preflight method',405)
+            headers={x.strip().lower() for x in request.headers.get('Access-Control-Request-Headers','').split(',') if x.strip()}
+            if headers-{'content-type','x-csrf-token'}:raise ReservationError('Unsupported preflight header',403)
         return
 
     if not protected and not auth_path:
@@ -275,12 +303,7 @@ def protect_request():
 
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
         origin = request.headers.get('Origin')
-        allowed_origins = {
-            request.host_url.rstrip('/'),
-            *config.RESERVATION_ORIGINS
-        }
-
-        if origin not in allowed_origins:
+        if not trusted_origin(origin,path):
             raise ReservationError('Untrusted request origin', 403)
 
         if not public:
@@ -297,12 +320,13 @@ def protect_request():
 def private_headers(response):
     origin = request.headers.get('Origin')
 
-    if origin in config.RESERVATION_ORIGINS:
+    if request.path.startswith(('/auth/','/api/','/download/')):response.vary.add('Origin')
+    if user_boundary(request.path) and origin in config.RESERVATION_ORIGINS:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-CSRF-Token'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        response.headers['Vary'] = 'Origin'
+        response.headers['Access-Control-Expose-Headers'] = 'X-SandLock-User'
 
     if request.path.startswith(('/auth/', '/api/', '/download/')) or request.path in ('/', '/static/index.html'):
         response.headers['Cache-Control'] = 'no-store'
@@ -330,7 +354,7 @@ def login_account(kind):
     token,csrf,user=auth.login(json_body(),kind)
     auth.revoke(request.cookies.get(cookie_name(kind),''))
     response=jsonify(user=user,csrf=csrf)
-    response.set_cookie(cookie_name(kind),token,httponly=True,secure=config.AUTH_COOKIE_SECURE,samesite='None',max_age=28800 if kind=='admin' else 604800,path='/')
+    session_cookie(response,kind,token)
     return response
 
 @app.get('/auth/<kind>/session')
@@ -342,7 +366,7 @@ def account_session(kind):
 def logout_account(kind):
     if kind not in ('user','admin'):abort(404)
     auth.revoke(request.cookies.get(cookie_name(kind),''))
-    response=jsonify(ok=True);response.delete_cookie(cookie_name(kind),path='/')
+    response=jsonify(ok=True);session_cookie(response,kind,clear=True)
     return response
 
 @app.post('/auth/user/profile')
@@ -596,5 +620,8 @@ if config.RESERVATION_WORKER:
     threading.Thread(target=reservation_loop,daemon=True).start()
 
 if __name__ == "__main__":
-    app.run(host=config.HTTP_HOST,port=config.HTTP_PORT,debug=False)
+    from waitress import serve
+    proxy_options={'trusted_proxy':'*','trusted_proxy_count':1,
+                   'trusted_proxy_headers':{'x-forwarded-proto','x-forwarded-host'}} if config.TRUST_PROXY else {}
+    serve(app,host=config.HTTP_HOST,port=config.HTTP_PORT,threads=4,expose_tracebacks=False,**proxy_options)
 

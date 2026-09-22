@@ -1,0 +1,8 @@
+.test-deps/
+__pycache__/
+*.pyc
+tests/.runtime/
+tests/results.json
+.env
+tests/browser-results.json
+node_modules/

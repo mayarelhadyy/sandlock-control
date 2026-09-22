@@ -1,41 +1,42 @@
-# SandLock Admin / integrated backend — clean final copy
+# SandLock backend and Owner dashboard
 
-This package is the cumulative Groups 1–7 implementation. It contains the Owner UI plus the shared Flask authentication, reservation authority, device gateway, financial, durability and reporting modules. SQLite is authoritative; Excel is a reporting projection. There are no accounts, sessions, reservation records or credentials in this package. The included Excel file is a blank header-only runtime template, not a data migration.
+SQLite is authoritative; Excel is the existing reporting projection. The User application is hosted separately on Vercel. No data migration or database initialization is required for this integration update.
 
-## Local setup (Windows PowerShell)
+## Railway production
 
-Extract both ZIPs under the same parent, leaving `SandLock_Admin_Final` beside `SandLock_User_Final`. Open a terminal in `SandLock_Admin_Final`:
+1. Deploy this folder with Python dependencies from `requirements.txt`. `railway.json` starts `python -B server.py`, using Waitress (four threads, one process). Remove an old conflicting Railway start-command override or set it to the same command. Do not use `flask run` or multiple application replicas with the current in-process MQTT/recovery workers.
+2. Set `SANDLOCK_RESERVATION_ORIGINS=https://sandlock-app.vercel.app` (exact origin, no trailing slash); `SANDLOCK_LOCAL_HTTP=0`; `SANDLOCK_COOKIE_PARTITIONED=1`; `SANDLOCK_TRUST_PROXY=1`; `SANDLOCK_HTTP_HOST=0.0.0.0`; `SANDLOCK_INITIALIZE_STORAGE=0`; `SANDLOCK_RESERVATION_WORKER=1`.
+3. Railway supplies `PORT`; it overrides `SANDLOCK_HTTP_PORT`. Retain the existing persistent volume, `SANDLOCK_RESERVATION_DB` and `SANDLOCK_WORKBOOK` paths and existing storage markers. Do not replace a live workbook with the bundled blank template. Do not delete/recreate a database or enable initialization to bypass a storage error.
+4. Retain existing authorized private MQTT settings and `SANDLOCK_MQTT_ENABLED` deliberately. No broker credentials were changed or tested. Keep them server-side. `.env.example` is documentation, not an automatically loaded environment file.
+5. Proxy trust must be enabled only behind the Railway edge: the application trusts one forwarded host/protocol hop. Do not expose this listener directly to untrusted traffic with proxy trust enabled. Keep one service replica; rolling overlap/multi-replica device coordination is outside this update.
+
+Owner sign-in: https://sandlock-control-production.up.railway.app/static/login.html. Owner dashboard: `/` after signing in. Existing Admin accounts are preserved; no production account/default password was created. `SANDLOCK_USER_APP` is optional and not needed for the separate Vercel deployment.
+
+User cookies have a new `__Host-sandlock_user_session_v2` name with Secure/HttpOnly/SameSite=None/Partitioned attributes and seven-day expiry. Users sign in again once; reservations/accounts remain intact. Admin cookies remain separate, first-party, eight-hour maximum with the existing inactivity policy. CSRF tokens, session revocation, ownership checks and sensitive no-store responses are retained. CORS is allowed only on User routes for the configured origin, including relevant error responses; Admin APIs are not opened cross-origin.
+
+## Local regression tests (no production services)
+
+Install `requirements.txt` in your normal development Python environment. Test scripts initialize **fresh synthetic databases only** under `tests/.runtime`; they never use configured production paths and force MQTT/recovery workers off. They may read `.test-deps` when locally installed there.
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-$env:SANDLOCK_MQTT_ENABLED='0'
-$env:SANDLOCK_LOCAL_HTTP='1'
-$env:SANDLOCK_HTTP_HOST='127.0.0.1'
-$env:SANDLOCK_HTTP_PORT='5000'
-$env:SANDLOCK_USER_APP=(Resolve-Path '..\SandLock_User_Final').Path
-$env:SANDLOCK_INITIALIZE_STORAGE='1'
-python -B manage_accounts.py create-admin YOUR_ADMIN_LOGIN --name 'Owner'
-# Choose your own password at the private prompts; no default account exists.
-$env:SANDLOCK_INITIALIZE_STORAGE='0'
-python -B server.py
+python -B -m unittest discover -s tests -p test_*.py -v
+node --test tests/frontend.test.cjs
 ```
 
-On Linux/macOS, create/activate a Python venv, install `requirements.txt`, and export the same environment variables. Set `SANDLOCK_USER_APP` to the absolute path of the extracted User folder. Run `python3 -B manage_accounts.py create-admin YOUR_ADMIN_LOGIN --name Owner` once with initialization enabled, then disable initialization and run `python3 -B server.py`.
+For browser tests, install Playwright in your test environment (`npm install --no-save playwright`, or configure NODE_PATH to an existing installation). The default browser is Windows Edge; set `SANDLOCK_BROWSER` to another installed Chromium executable if needed. Generate a temporary self-signed test certificate using OpenSSL (not a real credential):
 
-Owner login: http://127.0.0.1:5000/static/login.html
-User registration/login: http://127.0.0.1:5000/user/
-The protected Owner root is http://127.0.0.1:5000/.
+```powershell
+New-Item -ItemType Directory -Force tests/.runtime
+openssl req -x509 -newkey rsa:2048 -nodes -keyout tests/.runtime/key.pem -out tests/.runtime/cert.pem -days 1 -subj /CN=localhost
+python -B tests/serve_browser.py
+# In a second terminal:
+node tests/browser.cjs
+```
 
-`.env.example` documents settings; it is NOT automatically read. The preserved `run_dashboard` scripts also require these environment variables first and may install dependencies. No MQTT connection is made with `SANDLOCK_MQTT_ENABLED=0`. Missing broker settings fail closed if MQTT is explicitly enabled. Do not delete storage initialization markers to bypass recovery protections.
+The launcher binds Waitress only to 127.0.0.1:8795; the browser harness binds its local HTTPS proxy only to 127.0.0.1:8796. It uses app.frontend.test and api.backend.test with Chromium host overrides, fresh Owner/User test accounts and a synthetic workbook. TLS verification is relaxed **in the test browser only** for this self-signed certificate. Test ports must be free. Stop the launcher after testing. The generated test certificates, accounts, databases, screenshots and dependency directories are not deployment inputs and are ignored.
 
-## Deployment/configuration boundary
+## Redeployment verification
 
-The tested architecture serves User and Owner from the same Flask origin. Explicitly set `SANDLOCK_USER_APP`: the unchanged application default expects a sibling named `user`, not the new final folder name. This environment variable corrects the packaging path without changing application code. Admin can serve its UI/APIs without the User folder, but `/user/` requires that folder.
+Deploy backend first, verify its build installed Waitress and it binds Railway PORT without Flask's development-server warning, then deploy the frontend. Refresh existing tabs normally so the new worker/assets take over. If an older installed PWA cannot update, close all app tabs and reopen; clearing only that site's old cache/service worker is a troubleshooting fallback (never delete backend storage).
 
-Use persistent writable paths for SQLite and the reporting workbook; default paths are under this Admin folder. Supply overrides through `SANDLOCK_RESERVATION_DB` and `SANDLOCK_WORKBOOK` if needed. Existing real data requires a separate reviewed migration/backup operation; none is included or performed here. A blank workbook is required before first use because the current runtime does not create its initial workbook schema.
-
-For later HTTPS deployment, unset local HTTP or set `SANDLOCK_LOCAL_HTTP=0`; retain secure cookies, same-origin authentication/CSRF, protected PIN handling and no-store responses. A separately hosted User site needs a deliberately configured same-origin reverse proxy for `/auth/` and `/api/`; changing only the reservation API URL is insufficient. No production URL, broker secret, external payment integration or deployment is configured here. Keep secrets server-side.
-
-Physical-device certification remains deferred. Demo booking values are not collected revenue. This copy operation adds no business/device features and does not constitute the Final Deep E2E audit.
+Verify registration/login, session after refresh, credentialed locker/reservation requests, CSRF rejection, successful permitted mutation, logout and Owner login. Inspect browser Network headers without sharing session-cookie/token values. Real Vercel redirects/headers, Railway edge behavior and supported mobile browsers still require post-deployment verification. See `SANDLOCK_PRODUCTION_INTEGRATION_REPORT.md` for local evidence and limitations.
