@@ -236,31 +236,60 @@ def json_body():
 
 @app.before_request
 def protect_request():
-    path=request.path
-    g.identity=None
-    protected=path.startswith(('/api/','/download/')) or path in ('/','/static/index.html')
-    auth_path=path.startswith('/auth/')
-    if not protected and not auth_path:return
-    kind=auth_kind() if auth_path else ('user' if path.startswith('/api/v1/') and path!='/api/v1/legacy-reservations/import' else 'admin')
-    g.kind=kind
-    token=request.cookies.get(cookie_name(kind),'')
-    g.identity=auth.resolve(token,kind)
-    public=auth_path and path.rsplit('/',1)[-1] in ('login','register')
+    path = request.path
+    g.identity = None
+    protected = path.startswith(('/api/', '/download/')) or path in ('/', '/static/index.html')
+    auth_path = path.startswith('/auth/')
+
+    if not protected and not auth_path:
+        return
+
+    kind = auth_kind() if auth_path else (
+        'user'
+        if path.startswith('/api/v1/') and path != '/api/v1/legacy-reservations/import'
+        else 'admin'
+    )
+
+    g.kind = kind
+    token = request.cookies.get(cookie_name(kind), '')
+    g.identity = auth.resolve(token, kind)
+
+    public = auth_path and path.rsplit('/', 1)[-1] in ('login', 'register')
+
     if not public and not g.identity:
-        other=auth.resolve(request.cookies.get(cookie_name('user' if kind=='admin' else 'admin'),''),'user' if kind=='admin' else 'admin')
-        if path in ('/','/static/index.html') and not other:return redirect('/static/login.html')
-        raise ReservationError('Forbidden' if other else 'Authentication required',403 if other else 401)
-       if request.method not in ('GET','HEAD','OPTIONS'):
-        origin=request.headers.get('Origin')
-        allowed_origins = {request.host_url.rstrip('/'), *config.RESERVATION_ORIGINS}
+        other_kind = 'user' if kind == 'admin' else 'admin'
+        other = auth.resolve(
+            request.cookies.get(cookie_name(other_kind), ''),
+            other_kind
+        )
+
+        if path in ('/', '/static/index.html') and not other:
+            return redirect('/static/login.html')
+
+        raise ReservationError(
+            'Forbidden' if other else 'Authentication required',
+            403 if other else 401
+        )
+
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        origin = request.headers.get('Origin')
+        allowed_origins = {
+            request.host_url.rstrip('/'),
+            *config.RESERVATION_ORIGINS
+        }
+
         if origin not in allowed_origins:
-            raise ReservationError('Untrusted request origin',403)
+            raise ReservationError('Untrusted request origin', 403)
+
         if not public:
             import secrets
-            if not secrets.compare_digest(request.headers.get('X-CSRF-Token',''),g.identity['csrf']):
-                raise ReservationError('Invalid CSRF token',403)
+            if not secrets.compare_digest(
+                request.headers.get('X-CSRF-Token', ''),
+                g.identity['csrf']
+            ):
+                raise ReservationError('Invalid CSRF token', 403)
 
-    if g.identity and request.method in ('GET','HEAD') and auth_path:
+    if g.identity and request.method in ('GET', 'HEAD') and auth_path:
         auth.touch(g.identity)
 @app.after_request
 def private_headers(response):
