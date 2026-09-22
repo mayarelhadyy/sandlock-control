@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import json, ssl, threading, time, uuid, io
 from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix
 from security import public_reservation,safe_text,protect_workbook,identifier
 from device_gateway import DeviceGateway
 from openpyxl import load_workbook
@@ -17,6 +18,7 @@ import payment_service as finance
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / config.DATABASE_FILE
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.config['MAX_CONTENT_LENGTH']=65536
 lock = threading.RLock()
 reservations = ReservationService(BASE / config.RESERVATION_DATABASE)
