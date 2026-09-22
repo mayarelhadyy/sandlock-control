@@ -6,7 +6,7 @@ sys.path[:0]=[str(ROOT),str(ROOT/'.test-deps')]
 RUNTIME=ROOT/'tests/.runtime';RUNTIME.mkdir(exist_ok=True)
 folder=Path(tempfile.mkdtemp(dir=RUNTIME));assert folder.resolve().is_relative_to(RUNTIME.resolve())
 shutil.copy2(ROOT/'data/SandLock_Dashboard_Database.xlsx',folder/'report.xlsx')
-os.environ.update(SANDLOCK_MQTT_ENABLED='0',SANDLOCK_LOCAL_HTTP='0',SANDLOCK_INITIALIZE_STORAGE='1',SANDLOCK_RESERVATION_WORKER='0',SANDLOCK_TRUST_PROXY='0',SANDLOCK_RESERVATION_DB=str(folder/'state.sqlite3'),SANDLOCK_WORKBOOK=str(folder/'report.xlsx'),SANDLOCK_RESERVATION_ORIGINS='https://sandlock-app.vercel.app')
+os.environ.update(SANDLOCK_MQTT_ENABLED='0',SANDLOCK_PUSH_ENABLED='0',SANDLOCK_LOCAL_HTTP='0',SANDLOCK_INITIALIZE_STORAGE='1',SANDLOCK_RESERVATION_WORKER='0',SANDLOCK_TRUST_PROXY='0',SANDLOCK_RESERVATION_DB=str(folder/'state.sqlite3'),SANDLOCK_WORKBOOK=str(folder/'report.xlsx'),SANDLOCK_RESERVATION_ORIGINS='https://sandlock-app.vercel.app')
 import server as s
 from datetime import datetime,timezone,timedelta
 from reservation_service import iso

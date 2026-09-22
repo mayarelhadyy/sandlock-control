@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 import paho.mqtt.client as mqtt
 import config
 from auth import Auth
+from notifications import Notifications
 from reservation_service import ReservationService, ReservationError, excel_record
 from reservation_projection import ReservationProjection, workbook_lock, atomic_workbook_save
 import application_events
@@ -25,6 +26,7 @@ lock = threading.RLock()
 reservations = ReservationService(BASE / config.RESERVATION_DATABASE)
 projection = ReservationProjection(reservations, DB_PATH, lock)
 auth = Auth(reservations.store)
+notifications = Notifications(reservations, config)
 
 state = {
     "brokerConnected": False,
@@ -126,6 +128,10 @@ def handle_device_message(client, userdata, msg):
     payload = parse_payload(msg); state["lastBrokerEvent"] = now_iso()
     if getattr(msg,"retain",False) and topic.rsplit("/",1)[-1] in ("status","door","battery"):
         return  # Retained telemetry has no trustworthy observation time.
+    if topic == config.BASE_TOPIC+'/door':
+        door=payload.get('door',payload.get('state',payload.get('value','unknown'))) if isinstance(payload,dict) else payload
+        try:notifications.observe(config.BASE_TOPIC.rsplit('/',1)[-1],str(door).lower(),getattr(msg,'retain',False))
+        except Exception:app.logger.warning('Door notification persistence failed; device processing continues')
     log_device(topic,payload)
     suffix = topic.split(f"{config.BASE_TOPIC}/",1)[-1]
     if suffix == "ack":
@@ -365,6 +371,7 @@ def account_session(kind):
 @app.post('/auth/<kind>/logout')
 def logout_account(kind):
     if kind not in ('user','admin'):abort(404)
+    if kind=='user':notifications.revoke_session(g.identity['token_hash'])
     auth.revoke(request.cookies.get(cookie_name(kind),''))
     response=jsonify(ok=True);session_cookie(response,kind,clear=True)
     return response
@@ -590,6 +597,24 @@ def import_legacy_reservation():
     r,created=reservations.create(body.get('reservation'),legacy=True,timezone_name=body.get('timezone'),source='legacy-import')
     return reservation_response(r,201 if created else 200)
 
+@app.get('/api/v1/notifications')
+def notification_history():return jsonify(notifications.history(g.identity,request.args.get('before')))
+
+@app.post('/api/v1/notifications/<notification_id>/read')
+def notification_read(notification_id):
+    notifications.mark_read(g.identity['user_id'],notification_id)
+    return jsonify(ok=True)
+
+@app.post('/api/v1/push-subscriptions')
+def push_subscribe():return jsonify(notifications.subscribe(g.identity,json_body()))
+
+@app.post('/api/v1/push-subscriptions/remove')
+def push_remove():
+    sid=json_body().get('id')
+    if not isinstance(sid,str) or len(sid)!=64:raise ReservationError('Invalid subscription ID')
+    notifications.remove(g.identity['user_id'],sid)
+    return jsonify(ok=True)
+
 @app.get('/api/v1/lockers')
 def canonical_lockers():return jsonify(lockers=[{k:v for k,v in r.items() if k!='bookingId'} for r in reservations.availability()])
 
@@ -618,6 +643,15 @@ def reservation_loop():
 
 if config.RESERVATION_WORKER:
     threading.Thread(target=reservation_loop,daemon=True).start()
+
+def push_loop():
+    while True:
+        try:notifications.dispatch()
+        except Exception:app.logger.warning('Notification delivery worker deferred; history preserved')
+        time.sleep(2)
+
+if config.PUSH_ENABLED:
+    threading.Thread(target=push_loop,daemon=True).start()
 
 if __name__ == "__main__":
     from waitress import serve

@@ -6,3 +6,4 @@ tests/results.json
 .env
 tests/browser-results.json
 node_modules/
+.env.vapid
