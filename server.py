@@ -252,8 +252,9 @@ def protect_request():
         raise ReservationError('Forbidden' if other else 'Authentication required',403 if other else 401)
     if request.method not in ('GET','HEAD','OPTIONS'):
         origin=request.headers.get('Origin')
-        if origin!=request.host_url.rstrip('/') or request.headers.get('Sec-Fetch-Site')=='cross-site':
-            raise ReservationError('Untrusted request origin',403)
+allowed_origins = {request.host_url.rstrip('/'), *config.RESERVATION_ORIGINS}
+if origin not in allowed_origins:
+    raise ReservationError('Untrusted request origin',403)
         if not public:
             import secrets
             if not secrets.compare_digest(request.headers.get('X-CSRF-Token',''),g.identity['csrf']):raise ReservationError('Invalid CSRF token',403)
@@ -261,6 +262,13 @@ def protect_request():
 
 @app.after_request
 def private_headers(response):
+        origin = request.headers.get('Origin')
+    if origin in config.RESERVATION_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-CSRF-Token'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Vary'] = 'Origin'
     if request.path.startswith(('/auth/','/api/','/download/')) or request.path in ('/','/static/index.html'):
         response.headers['Cache-Control']='no-store'
     if getattr(g,'identity',None):response.headers['X-SandLock-User']=g.identity['user_id']
@@ -282,7 +290,7 @@ def login_account(kind):
     token,csrf,user=auth.login(json_body(),kind)
     auth.revoke(request.cookies.get(cookie_name(kind),''))
     response=jsonify(user=user,csrf=csrf)
-    response.set_cookie(cookie_name(kind),token,httponly=True,secure=config.AUTH_COOKIE_SECURE,samesite='Lax',max_age=28800 if kind=='admin' else 604800,path='/')
+    response.set_cookie(cookie_name(kind),token,httponly=True,secure=config.AUTH_COOKIE_SECURE,samesite='None',max_age=28800 if kind=='admin' else 604800,path='/')
     return response
 
 @app.get('/auth/<kind>/session')
