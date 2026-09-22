@@ -251,7 +251,6 @@ def protect_request():
         if path in ('/','/static/index.html') and not other:return redirect('/static/login.html')
         raise ReservationError('Forbidden' if other else 'Authentication required',403 if other else 401)
     if request.method not in ('GET','HEAD','OPTIONS'):
-        print("ORIGIN DEBUG:", request.headers.get("Origin"), request.host_url, request.headers.get("X-Forwarded-Proto"), request.headers.get("X-Forwarded-Host"), flush=True)
         origin=request.headers.get('Origin')
         if origin!=request.host_url.rstrip('/') or request.headers.get('Sec-Fetch-Site')=='cross-site':
             raise ReservationError('Untrusted request origin',403)
