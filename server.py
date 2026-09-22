@@ -240,6 +240,8 @@ def protect_request():
     g.identity = None
     protected = path.startswith(('/api/', '/download/')) or path in ('/', '/static/index.html')
     auth_path = path.startswith('/auth/')
+    if request.method == 'OPTIONS':
+        return
 
     if not protected and not auth_path:
         return
