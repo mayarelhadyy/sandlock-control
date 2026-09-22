@@ -293,24 +293,31 @@ def protect_request():
         auth.touch(g.identity)
 @app.after_request
 def private_headers(response):
-        origin = request.headers.get('Origin')
+    origin = request.headers.get('Origin')
+
     if origin in config.RESERVATION_ORIGINS:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-CSRF-Token'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
         response.headers['Vary'] = 'Origin'
-    if request.path.startswith(('/auth/','/api/','/download/')) or request.path in ('/','/static/index.html'):
-        response.headers['Cache-Control']='no-store'
-    if getattr(g,'identity',None):response.headers['X-SandLock-User']=g.identity['user_id']
-    # Refresh Admin inactivity only after successfully authorized operations.
-    if getattr(g,'identity',None) and response.status_code<400:auth.touch(g.identity)
-    response.headers['X-Content-Type-Options']='nosniff'
-    response.headers['X-Frame-Options']='DENY'
-    response.headers['Referrer-Policy']='no-referrer'
-    response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-    return response
 
+    if request.path.startswith(('/auth/', '/api/', '/download/')) or request.path in ('/', '/static/index.html'):
+        response.headers['Cache-Control'] = 'no-store'
+
+    if getattr(g, 'identity', None):
+        response.headers['X-SandLock-User'] = g.identity['user_id']
+
+    # Refresh Admin inactivity only after successfully authorized operations.
+    if getattr(g, 'identity', None) and response.status_code < 400:
+        auth.touch(g.identity)
+
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+
+    return response
 @app.post('/auth/user/register')
 def register_user():
     return jsonify(user=auth.register(json_body())),201
