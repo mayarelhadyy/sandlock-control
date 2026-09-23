@@ -57,3 +57,8 @@ table{font-size:12px}th{font-size:11px;color:#07585b}
 .sidebar .nav.active{background:#e2f3ef;color:var(--teal)}
 .sidebar .nav:active{transform:scale(.98)}
 .demoDivider{display:flex;align-items:center;gap:10px;margin:18px 0 12px;color:#879391;font-size:12px}.demoDivider:before,.demoDivider:after{content:"";height:1px;background:#e1e7e4;flex:1}.demoLoginBtn{width:100%;min-height:48px}.demoHint{text-align:center!important;font-size:11px!important;margin:8px 0 0!important;color:#879391!important}
+
+/* Final local-review fixes: unified owner navigation icons and User/Owner map coordinates. */
+.nav{display:flex;align-items:center;gap:11px}.navIcon{width:20px;height:20px;display:inline-grid;place-items:center;flex:0 0 20px}.navIcon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.pA{left:20%;top:13%;--label:"A"}.pB{left:31%;top:27%;--label:"B"}.pC{left:40%;top:41%;--label:"C"}.pD{left:49%;top:55%;--label:"D"}.pE{left:59%;top:69%;--label:"E"}.pF{left:69%;top:83%;--label:"F"}
+@media(max-width:1000px){.nav{justify-content:center}.navIcon{width:22px;height:22px;flex-basis:22px}.navIcon svg{width:21px;height:21px}}
+@media(max-width:680px){.nav{display:grid;place-items:center;padding:9px 4px}.navIcon{display:grid}.navLabel{display:none}}

@@ -403,7 +403,9 @@ def logout_account(kind):
 def update_profile():
     body=json_body();name=body.get('name');mobile=body.get('mobile')
     if not isinstance(name,str) or not 2<=len(name.strip())<=120:raise ReservationError('Invalid profile')
-    if not isinstance(mobile,str) or not re.fullmatch(r'[0-9]{11}',mobile):raise ReservationError('Mobile number must be exactly 11 digits.')
+    if not isinstance(mobile,str):raise ReservationError('Invalid mobile number.')
+    digits=re.sub(r'\D','',mobile);mobile=('0'+digits) if len(digits)==10 and digits.startswith('1') else digits
+    if not re.fullmatch(r'01[0125][0-9]{8}',mobile):raise ReservationError('Enter an Egyptian mobile as 01XXXXXXXXX or 1XXXXXXXXX after +20.')
     def save(db):
         db.execute('UPDATE accounts SET name=?,mobile=? WHERE user_id=?',(name.strip(),mobile,g.identity['user_id']))
         application_events.accept(db,g.identity['user_id'],'profile',{'name':name.strip(),'mobile':mobile},uuid.uuid4().hex)

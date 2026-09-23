@@ -37,13 +37,16 @@ class Auth:
         login=str(body.get('login','')).strip().lower()
         password=body.get('password','')
         name=body.get('name',''); mobile=body.get('mobile','')
-        password_min = 8 if role == 'user' else 12
+        password_min = 8
         if not re.fullmatch(r'[a-z0-9_.-]{3,64}',login) or not isinstance(password,str) or not password_min<=len(password)<=128:
             raise ReservationError(f'Login must be 3–64 letters/digits/._-; password must be {password_min}–128 characters')
         if not isinstance(name,str) or not 2<=len(name.strip())<=120:
             raise ReservationError('Invalid profile')
-        if role == 'user' and (not isinstance(mobile,str) or not re.fullmatch(r'[0-9]{11}', mobile)):
-            raise ReservationError('Mobile number must be exactly 11 digits.')
+        if role == 'user':
+            if not isinstance(mobile,str): raise ReservationError('Invalid mobile number.')
+            digits=re.sub(r'\D','',mobile)
+            mobile=('0'+digits) if len(digits)==10 and digits.startswith('1') else digits
+            if not re.fullmatch(r'01[0125][0-9]{8}', mobile): raise ReservationError('Enter an Egyptian mobile as 01XXXXXXXXX or 1XXXXXXXXX after +20.')
         if role != 'user' and (not isinstance(mobile,str) or len(mobile)>30):
             raise ReservationError('Invalid profile')
         uid='usr_'+secrets.token_hex(16)
