@@ -1,6 +1,8 @@
 """Prototype financial assessments, never payment or settlement evidence."""
 import json
 import re
+import math
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 
 
@@ -23,6 +25,19 @@ def amount_for(start,end,rate,multiplier=1):
     return float(money(seconds*Decimal(str(rate))*Decimal(multiplier)/Decimal(3600)))
 
 
+def late_fee_for(end, now, rate, multiplier=3, grace_minutes=10):
+    """Whole-hour late assessment after a real grace period.
+
+    Any started chargeable hour counts as one full late hour. The grace period
+    itself is never billed.
+    """
+    charge_start=end+timedelta(minutes=grace_minutes)
+    seconds=max(0,(now-charge_start).total_seconds())
+    if seconds<=0:return 0.0
+    hours=math.ceil(seconds/3600)
+    return float(money(Decimal(hours)*Decimal(str(rate))*Decimal(str(multiplier))))
+
+
 def view(r,now):
     from reservation_service import parse_time,iso
     value=dict(r)
@@ -30,7 +45,7 @@ def view(r,now):
         value.update(financialStatus='operator-review' if r.get('financialStatus')=='operator-review' else 'legacy-review',actualCollectedRevenue=None)
     late=r.get('lateFee',0)
     if r['status'] in ('Active','Overdue'):
-        late=amount_for(parse_time(r['endTime']),now,r['hourlyRate'],3)
+        late=late_fee_for(parse_time(r['endTime']),now,r['hourlyRate'],3,10)
     value.update(lateFeeCurrent=late,lateHourlyRate=float(money(Decimal(str(r['hourlyRate']))*3)),financialAsOf=iso(now),actualCollectedRevenue=None)
     if r['status']=='Cancelled':value['demoBookingValue']=r.get('finalTotal')
     else:value['demoBookingValue']=float(money(Decimal(str(r['total']))+Decimal(str(late))))
@@ -39,10 +54,10 @@ def view(r,now):
 
 def accept(db,r,kind,amount):
     from reservation_service import ReservationError
-    if kind not in ('base','late'):raise ReservationError('Unsupported financial event')
+    if kind not in ('base','late','extension'):raise ReservationError('Unsupported financial event')
     amount=money(amount)
     if amount==0:return None
-    reference=('PAY-' if kind=='base' else 'LATE-')+r['bookingId']
+    reference=({'base':'PAY-','late':'LATE-','extension':'EXT-'})[kind]+r['bookingId']
     body=dict(bookingId=r['bookingId'],userId=r['userId'],kind=kind,amountMinor=int(amount*100),currency='EGP')
     encoded=json.dumps(body,sort_keys=True,separators=(',',':'))
     previous=db.execute('SELECT body FROM financial_events WHERE reference=?',(reference,)).fetchone()
@@ -94,7 +109,7 @@ def reporting_rows(store):
     result=[]
     for e in rows:
         r=bookings[e['booking_id']]
-        result.append({'Timestamp':e['created_at'],'Booking ID':e['booking_id'],'User Mobile':'','Type':'Demo Booking Value' if e['kind']=='base' else 'Late Fee Assessment','Amount EGP':json.loads(e['body'])['amountMinor']/100,'Status':'demo-only' if e['kind']=='base' else 'assessment-only','Reference':e['reference'],'Financial Event':e['reference'],'Financial Outcome':r.get('financialStatus','legacy-review'),'Final Demo Value':r.get('finalTotal',r['total']),'Actual Collected Revenue':'N/A'})
+        result.append({'Timestamp':e['created_at'],'Booking ID':e['booking_id'],'User Mobile':'','Type':{'base':'Demo Booking Value','late':'Late Fee Assessment','extension':'Extension Value'}.get(e['kind'],e['kind']),'Amount EGP':json.loads(e['body'])['amountMinor']/100,'Status':'demo-only' if e['kind']=='base' else 'assessment-only','Reference':e['reference'],'Financial Event':e['reference'],'Financial Outcome':r.get('financialStatus','legacy-review'),'Final Demo Value':r.get('finalTotal',r['total']),'Actual Collected Revenue':'N/A'})
     return result
 
 

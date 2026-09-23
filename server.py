@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request, send_from_directory, g, redirect, abort, send_file
 from pathlib import Path
 from datetime import datetime, timezone
-import json, ssl, threading, time, uuid, io
+import json, ssl, threading, time, uuid, io, re
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 from security import public_reservation,safe_text,protect_workbook,identifier
@@ -30,9 +30,11 @@ notifications = Notifications(reservations, config)
 
 state = {
     "brokerConnected": False,
+    "brokerStatus": "connecting" if config.MQTT_ENABLED else "disconnected",
     "lastBrokerEvent": None,
     "locker": {"id":"A","status":"offline","door":"unknown","battery":None,"online":False,"lastSeen":None,"currentBooking":""},
     "lastAlert": None,
+    "batteryAlertLevel": None,
 }
 
 def observed_locker():
@@ -111,13 +113,13 @@ def parse_payload(msg):
     except: return text
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
-    state["brokerConnected"] = reason_code == 0; state["lastBrokerEvent"] = now_iso()
+    state["brokerConnected"] = reason_code == 0; state["brokerStatus"] = "connected" if state["brokerConnected"] else "disconnected"; state["lastBrokerEvent"] = now_iso()
     if not state["brokerConnected"]:return
     client.subscribe(f"{config.BASE_TOPIC}/#", qos=config.QOS)
     # Broker connection is not evidence of device liveness.
 
 def on_disconnect(client, userdata, flags, reason_code, properties=None):
-    state["brokerConnected"] = False; state["lastBrokerEvent"] = now_iso(); update_locker(online=False)
+    state["brokerConnected"] = False; state["brokerStatus"] = "reconnecting" if config.MQTT_ENABLED else "disconnected"; state["lastBrokerEvent"] = now_iso(); update_locker(online=False)
 
 def handle_device_message(client, userdata, msg):
     topic=msg.topic
@@ -149,8 +151,16 @@ def handle_device_message(client, userdata, msg):
         except: val=None
         if val is not None and not 0<=val<=100:val=None
         update_locker(battery=val, online=True,lastSeen=now_iso())
+        level = 'critical' if val is not None and val <= 10 else ('warning' if val is not None and val <= 20 else None)
+        if level and level != state.get('batteryAlertLevel'):
+            message=f'Locker A battery is {val:g}%'
+            append_row('Alerts',[now_iso(),'A','Low Battery',level,message,False])
+            state['lastAlert']={'type':'Low Battery','severity':level,'message':message,'timestamp':now_iso()}
+        state['batteryAlertLevel']=level
     elif suffix == "alert":
-        typ='Device Alert';sev='warning';message='Device alert received'
+        typ=safe_text(payload.get('type') or 'Device Alert') if isinstance(payload,dict) else 'Device Alert'
+        sev=safe_text(payload.get('severity') or 'warning') if isinstance(payload,dict) else 'warning'
+        message=safe_text(payload.get('message') or 'Device alert received') if isinstance(payload,dict) else safe_text(payload or 'Device alert received')
         append_row('Alerts',[now_iso(),'A',typ,sev,message,False]);state['lastAlert']={'type':typ,'severity':sev,'message':message,'timestamp':now_iso()}
     elif suffix == "app/user/upsert" and isinstance(payload,dict): upsert_user(payload)
     elif suffix.startswith("app/reservation/") and isinstance(payload,dict):
@@ -211,10 +221,11 @@ gateway.bind(reservations)
 def mqtt_loop():
     while True:
         try:
+            state["brokerStatus"] = "connecting" if state["lastBrokerEvent"] is None else "reconnecting"
             mqttc.connect(config.BROKER_HOST, config.BROKER_PORT, keepalive=45)
             mqttc.loop_forever(retry_first_connection=True)
         except Exception:
-            state["brokerConnected"]=False; time.sleep(3)
+            state["brokerConnected"]=False; state["brokerStatus"]="reconnecting"; state["lastBrokerEvent"]=now_iso(); time.sleep(3)
 if config.MQTT_ENABLED:
     threading.Thread(target=mqtt_loop, daemon=True).start()
 
@@ -236,18 +247,15 @@ def auth_kind():
 
 def cookie_name(kind):
     if kind=='admin':return 'sandlock_admin_session'
-    # New name avoids ambiguity with old, unpartitioned user cookies.
-    return ('__Host-' if config.AUTH_COOKIE_SECURE else '')+'sandlock_user_session_v2'
+    # First-party cookie: distinct from the former cross-site/partitioned cookie.
+    return ('__Host-' if config.AUTH_COOKIE_SECURE else '')+'sandlock_user_session_v3'
 
 def session_cookie(response,kind,token='',clear=False):
-    same_site='None' if kind=='user' and config.AUTH_COOKIE_SECURE else 'Lax'
+    same_site='Lax'
     response.set_cookie(cookie_name(kind),token,httponly=True,secure=config.AUTH_COOKIE_SECURE,
                         samesite=same_site,max_age=0 if clear else (28800 if kind=='admin' else 604800),
                         expires=0 if clear else None,path='/')
-    if kind=='user' and config.AUTH_COOKIE_SECURE and config.AUTH_COOKIE_PARTITIONED:
-        # Compatible with the existing Flask/Werkzeug versions; never expose the token in JSON.
-        cookies=response.headers.getlist('Set-Cookie')
-        response.headers.setlist('Set-Cookie',[value+'; Partitioned' if value.startswith(cookie_name(kind)+'=') else value for value in cookies])
+
 
 def user_boundary(path):
     return path.startswith('/auth/user/') or (path.startswith('/api/v1/') and path!='/api/v1/legacy-reservations/import')
@@ -290,7 +298,7 @@ def protect_request():
     token = request.cookies.get(cookie_name(kind), '')
     g.identity = auth.resolve(token, kind)
 
-    public = auth_path and path.rsplit('/', 1)[-1] in ('login', 'register')
+    public = auth_path and (path.rsplit('/', 1)[-1] in ('login', 'register') or path in ('/auth/admin/demo','/auth/admin/demo-status'))
 
     if not public and not g.identity:
         other_kind = 'user' if kind == 'admin' else 'admin'
@@ -354,6 +362,21 @@ def private_headers(response):
 def register_user():
     return jsonify(user=auth.register(json_body())),201
 
+
+@app.get('/auth/admin/demo-status')
+def demo_admin_status():
+    return jsonify(enabled=bool(config.OWNER_DEMO_MODE))
+
+@app.post('/auth/admin/demo')
+def demo_admin_login():
+    if not config.OWNER_DEMO_MODE:
+        raise ReservationError('Demo mode is disabled',404)
+    token,csrf,user=auth.demo_admin_session()
+    auth.revoke(request.cookies.get(cookie_name('admin'),''))
+    response=jsonify(user=user,csrf=csrf,demo=True)
+    session_cookie(response,'admin',token)
+    return response
+
 @app.post('/auth/<kind>/login')
 def login_account(kind):
     if kind not in ('user','admin'):abort(404)
@@ -379,7 +402,8 @@ def logout_account(kind):
 @app.post('/auth/user/profile')
 def update_profile():
     body=json_body();name=body.get('name');mobile=body.get('mobile')
-    if not isinstance(name,str) or not 2<=len(name.strip())<=120 or not isinstance(mobile,str) or len(mobile)>30:raise ReservationError('Invalid profile')
+    if not isinstance(name,str) or not 2<=len(name.strip())<=120:raise ReservationError('Invalid profile')
+    if not isinstance(mobile,str) or not re.fullmatch(r'[0-9]{11}',mobile):raise ReservationError('Mobile number must be exactly 11 digits.')
     def save(db):
         db.execute('UPDATE accounts SET name=?,mobile=? WHERE user_id=?',(name.strip(),mobile,g.identity['user_id']))
         application_events.accept(db,g.identity['user_id'],'profile',{'name':name.strip(),'mobile':mobile},uuid.uuid4().hex)
@@ -389,24 +413,48 @@ def update_profile():
 
 @app.route("/")
 def home(): return send_from_directory(BASE/"static","index.html")
+def owner_users():
+    # Accounts in the authoritative SQLite store are the source of truth.
+    # Never expose password hashes, sessions, CSRF tokens, or other auth secrets.
+    with reservations.store.connect() as db:
+        rows=db.execute("SELECT user_id,login,name,mobile,created_at FROM accounts WHERE role='user' ORDER BY rowid DESC").fetchall()
+    return [{'Login':r['login'],'Mobile':r['mobile'],'Name':r['name'],'User ID':r['user_id'],'Account Created':r['created_at'] or 'Not recorded'} for r in rows]
+
+def owner_feedback():
+    with reservations.store.connect() as db:
+        rows=db.execute("SELECT actor,body,created_at FROM application_events WHERE kind='feedback' ORDER BY rowid DESC").fetchall()
+        accounts={r['user_id']:r['name'] for r in db.execute("SELECT user_id,name FROM accounts WHERE role='user'").fetchall()}
+    out=[]
+    for row in rows:
+        data=json.loads(row['body'])
+        rating=int(data.get('rating') or 0)
+        out.append({'User Name':accounts.get(row['actor'],data.get('ownerName','')),'Reservation ID':data.get('bookingId',''),'Locker':data.get('lockerId',''),'Rating':('★'*rating)+('☆'*(5-rating))+f'  {rating} / 5','Comment':data.get('comment') or 'No comment','Submitted At':row['created_at']})
+    return out
+
+def optional_reporting_rows(sheet):
+    try:return rows_as_dict(sheet,None)
+    except Exception as exc:
+        app.logger.warning('%s reporting projection unavailable: %s',sheet,type(exc).__name__)
+        return []
+
 @app.get("/api/overview")
 def api_overview():
     state["locker"].update(observed_locker())
-    financial_rows=reservations.list();reservation_rows=[excel_record(r) for r in financial_rows]; users=rows_as_dict("Users",None); alerts=rows_as_dict("Alerts",None)
-    active=[r for r in reservation_rows if str(r.get("Status","")).lower() not in ("completed","cancelled","")]
+    financial_rows=reservations.list(); reservation_rows=[excel_record(r) for r in financial_rows]
+    active=[r for r in reservation_rows if str(r.get("Status","")).lower() in ("confirmed","active","overdue")]
+    alerts=optional_reporting_rows("Alerts")
     financial=finance.summary(financial_rows)
     view_state={**state,"locker":{**state["locker"]}}
     slot=next(x for x in reservations.availability() if x['lockerId']=='A')
     view_state['locker'].update(status=slot['status'],currentBooking=slot['bookingId'] or '')
-    return jsonify({"state":view_state,"kpi":{"users":len(users),"activeReservations":len(active),"alerts":len([a for a in alerts if not a.get("Acknowledged")]),**financial},"activeReservations":active[:8],"alerts":alerts[:8]})
+    return jsonify({"state":view_state,"kpi":{"users":len(owner_users()),"activeReservations":len(active),"alerts":len([a for a in alerts if not a.get("Acknowledged")]),**financial},"activeReservations":active[:8],"alerts":alerts[:8]})
 @app.get("/api/<name>")
 def api_sheet(name):
     mapping={"users":"Users","reservations":"Reservations","access":"Access Logs","events":"Device Events","alerts":"Alerts","payments":"Payments","feedback":"Feedback","lockers":"Lockers","audit":"Admin Audit"}
     if name not in mapping: return jsonify({"error":"not found"}),404
-    if name == "payments":
-        current=finance.reporting_rows(reservations.store)
-        historical=[{**r,'Status':'legacy-review (not collected)'} for r in rows_as_dict('Payments',None) if not r.get('Financial Event')]
-        return jsonify(current+historical)
+    if name == "payments": return jsonify(finance.reporting_rows(reservations.store))
+    if name == "users": return jsonify(owner_users())
+    if name == "feedback": return jsonify(owner_feedback())
     if name == "reservations": return jsonify([excel_record(r) for r in reservations.list()])
     if name == "lockers":
         rows=rows_as_dict("Lockers",300)
@@ -554,6 +602,35 @@ def financial_quote():
 @app.get('/api/v1/reservations/<booking_id>')
 def canonical_reservation(booking_id):return reservation_response(reservations.get(booking_id,actor=g.identity['user_id']))
 
+@app.get('/api/v1/feedback')
+def user_feedback_list():
+    with reservations.store.connect() as db:
+        rows=db.execute("SELECT body,created_at FROM application_events WHERE kind='feedback' AND actor=? ORDER BY rowid DESC",(g.identity['user_id'],)).fetchall()
+    feedback=[]
+    for row in rows:
+        data=json.loads(row['body'])
+        feedback.append({**data,'createdAt':row['created_at']})
+    return jsonify(feedback=feedback)
+
+@app.post('/api/v1/reservations/<booking_id>/feedback')
+def submit_reservation_feedback(booking_id):
+    reservation=reservations.get(booking_id,actor=g.identity['user_id'])
+    if reservation['status']!='Completed':raise ReservationError('Feedback is available only after the reservation is completed',409)
+    body=json_body();rating=body.get('rating');comment=body.get('comment','')
+    if isinstance(rating,bool) or not isinstance(rating,int) or rating<1 or rating>5:raise ReservationError('Rating must be an integer from 1 to 5')
+    if not isinstance(comment,str):raise ReservationError('Invalid feedback comment')
+    comment=comment.strip()
+    if len(comment)>1000:raise ReservationError('Feedback comment is too long')
+    def save(db):
+        rows=db.execute("SELECT body FROM application_events WHERE kind='feedback' AND actor=?",(g.identity['user_id'],)).fetchall()
+        if any(json.loads(row['body']).get('bookingId')==booking_id for row in rows):raise ReservationError('Feedback already submitted for this reservation',409)
+        data={'bookingId':booking_id,'userId':g.identity['user_id'],'ownerName':g.identity.get('name',''),'ownerMobile':g.identity.get('mobile',''),'lockerId':reservation['lockerId'],'rating':rating,'comment':comment}
+        key,_=application_events.accept(db,g.identity['user_id'],'feedback',data,uuid.uuid4().hex)
+        created=db.execute('SELECT created_at FROM application_events WHERE event_id=?',(key,)).fetchone()['created_at']
+        return {**data,'feedbackId':key,'createdAt':created}
+    feedback=reservations.store.transaction(save)
+    return jsonify(feedback=feedback),201
+
 @app.get('/api/v1/reservations/<booking_id>/pin')
 def user_pin(booking_id):
     r=reservations.get(booking_id,actor=g.identity['user_id'])
@@ -587,7 +664,8 @@ def safe_error(exc):
 def user_reservation_action(booking_id,action):
     body=request.get_json(silent=True) or {}
     if not isinstance(body,dict):raise ReservationError('Expected JSON object')
-    r,changed=reservations.transition(booking_id,action,body.get('expectedRevision'),source='user',actor=g.identity['user_id'])
+    if action=='extend':r,changed=reservations.extend(booking_id,body.get('expectedRevision'),actor=g.identity['user_id'])
+    else:r,changed=reservations.transition(booking_id,action,body.get('expectedRevision'),source='user',actor=g.identity['user_id'])
     return reservation_response(r,changed=changed)
 
 @app.post('/api/v1/legacy-reservations/import')
@@ -627,7 +705,7 @@ def user_asset(name):
     return send_from_directory(config.USER_APP_PATH,name)
 
 def recovery_tick():
-    tasks=(('reservations',reservations.list),('reporting',projection.flush),('applications',projection.applications),('financial',projection.financial),('device-audit',lambda:projection.device_audit(gateway.journal)),('notifications',lambda:projection.notify(reservation_notify)),('device-intents',lambda:gateway.reconcile(reservations)))
+    tasks=(('reservations',reservations.list),('time-alerts',notifications.reservation_time_alerts),('reporting',projection.flush),('applications',projection.applications),('financial',projection.financial),('device-audit',lambda:projection.device_audit(gateway.journal)),('notifications',lambda:projection.notify(reservation_notify)),('device-intents',lambda:gateway.reconcile(reservations)))
     result={}
     for name,task in tasks:
         try:result[name]=task() is not False

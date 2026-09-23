@@ -30,7 +30,6 @@ if MQTT_ENABLED and not all((BROKER_HOST, BROKER_USERNAME, BROKER_PASSWORD)):
 # Established storage is never silently recreated when its initialization marker exists.
 
 # Partition user sessions by top-level site; keep Admin cookies first-party.
-AUTH_COOKIE_PARTITIONED = os.environ.get("SANDLOCK_COOKIE_PARTITIONED", "1") == "1"
 TRUST_PROXY = os.environ.get("SANDLOCK_TRUST_PROXY", "1" if os.environ.get("RAILWAY_ENVIRONMENT_ID") else "0") == "1"
 
 # Notification history is always available; external Web Push is explicitly enabled.
@@ -38,3 +37,6 @@ PUSH_ENABLED = os.environ.get("SANDLOCK_PUSH_ENABLED", "0") == "1"
 VAPID_PUBLIC_KEY = os.environ.get("SANDLOCK_VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.environ.get("SANDLOCK_VAPID_PRIVATE_KEY", "")
 VAPID_SUBJECT = os.environ.get("SANDLOCK_VAPID_SUBJECT", "")
+
+# Owner-only local demo shortcut. Disabled in deployed environments unless explicitly enabled.
+OWNER_DEMO_MODE = os.environ.get("SANDLOCK_OWNER_DEMO_MODE", "1" if os.environ.get("SANDLOCK_LOCAL_HTTP", "0") == "1" else "0") == "1"

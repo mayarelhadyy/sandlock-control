@@ -221,17 +221,25 @@ class ReservationService:
             if not isinstance(expected_revision,int) or isinstance(expected_revision,bool):raise ReservationError('expectedRevision is required')
             if expected_revision != r['revision']:raise ReservationError('Reservation changed; refresh and retry',409)
             now=self.clock()
-            if action=='cancel' and source!='admin' and (r['status']!='Confirmed' or now>=parse_time(r['startTime'])):
-                raise ReservationError('User cancellation is allowed only before start',409)
+            # A user may cancel before or during a session. Before start, the demo
+            # booking value is zeroed; once the session has started, the base value
+            # remains and any applicable late assessment is finalized.
+            if action=='cancel' and source!='admin' and r['status'] not in ('Confirmed','Active','Overdue'):
+                raise ReservationError('This reservation can no longer be cancelled',409)
             if action=='complete' and r['status'] not in ('Active','Overdue'):
                 raise ReservationError('Only an active or overdue reservation can be completed',409)
             r.update(status=target,updatedAt=iso(now),revision=r['revision']+1)
             r['cancelledAt' if action=='cancel' else 'completedAt']=iso(now)
             if action=='cancel':
                 before=now<parse_time(r['startTime'])
-                r.update(finalTotal=0 if before else None,financialStatus='cancelled-zero' if before else 'operator-review',refundStatus='not-supported')
+                if before:
+                    r.update(lateFee=0,finalTotal=0,financialStatus='cancelled-zero',refundStatus='not-supported')
+                else:
+                    fee=finance.late_fee_for(parse_time(r['endTime']),now,r['hourlyRate'],3,10)
+                    r.update(lateFee=fee,finalTotal=float(finance.money(Decimal(str(r['total']))+Decimal(str(fee)))),financialStatus='demo-final',refundStatus='not-supported')
+                    if r.get('financialVersion')==1:finance.accept(db,r,'late',fee)
             else:
-                fee=finance.amount_for(parse_time(r['endTime']),now,r['hourlyRate'],3)
+                fee=finance.late_fee_for(parse_time(r['endTime']),now,r['hourlyRate'],3,10)
                 r.update(lateFee=fee,finalTotal=float(finance.money(Decimal(str(r['total']))+Decimal(str(fee)))))
                 if r.get('financialVersion')==1:
                     r['financialStatus']='demo-final'
@@ -239,6 +247,28 @@ class ReservationService:
             if admin_actor:r['actionActor']=admin_actor
             db.execute('UPDATE financial_events SET projected=0,projection_version=projection_version+1 WHERE booking_id=?',(booking_id,))
             self.store.save(db,r,action,source)
+            return r,True
+        return self.store.transaction(operation)
+
+    def extend(self, booking_id, expected_revision=None, actor=None, minutes=60):
+        if minutes != 60:raise ReservationError('Only a one-hour extension is supported')
+        def operation(db):
+            self.authorize(db,booking_id,actor)
+            self._reconcile(db)
+            r=self.store.get(db,booking_id)
+            if not r:raise ReservationError('Reservation not found',404)
+            if r['status'] not in ('Active','Overdue'):raise ReservationError('Only an active reservation can be extended',409)
+            if not isinstance(expected_revision,int) or isinstance(expected_revision,bool):raise ReservationError('expectedRevision is required')
+            if expected_revision!=r['revision']:raise ReservationError('Reservation changed; refresh and retry',409)
+            now=self.clock();end=parse_time(r['endTime'])
+            if now>end+timedelta(minutes=10):raise ReservationError('The extension grace period has ended',409)
+            if int(r.get('extensionCount',0))>=1:raise ReservationError('This reservation has already been extended once',409)
+            new_end=end+timedelta(hours=1)
+            r.update(endTime=iso(new_end),status='Active',updatedAt=iso(now),revision=r['revision']+1,lateFee=0,extensionCount=1)
+            r['total']=finance.amount_for(parse_time(r['startTime']),new_end,r['hourlyRate'])
+            r.pop('finalTotal',None)
+            if r.get('financialVersion')==1:finance.accept(db,r,'extension',r['hourlyRate'])
+            self.store.save(db,r,'extend','user')
             return r,True
         return self.store.transaction(operation)
 
@@ -253,10 +283,14 @@ class ReservationService:
 
 
 def excel_record(r):
+    # Keep canonical timestamps in UTC, but make owner-facing report fields readable
+    # in the operating timezone. Start ISO / End ISO remain canonical UTC values.
+    zone=ZoneInfo('Africa/Cairo')
     start,end=parse_time(r['startTime']),parse_time(r['endTime'])
+    local_start,local_end=start.astimezone(zone),end.astimezone(zone)
     return {'Booking ID':r['bookingId'],'Locker':r['lockerId'],'User Mobile':r.get('ownerMobile',''),
-            'User Name':r.get('ownerName',''),'Date':start.strftime('%Y-%m-%d'),'Start Time':start.strftime('%H:%M'),
-            'End Time':end.strftime('%H:%M'),'Start ISO':r['startTime'],'End ISO':r['endTime'],
+            'User Name':r.get('ownerName',''),'Date':local_start.strftime('%d %b %Y'),'Start Time':local_start.strftime('%I:%M %p'),
+            'End Time':local_end.strftime('%I:%M %p'),'Start ISO':r['startTime'],'End ISO':r['endTime'],
             'Hourly Rate':r.get('hourlyRate',0),'Base Amount':r.get('total',0),'Late Fee':r.get('lateFee',0),
             'Final Total':r.get('finalTotal',0),'Financial Outcome':r.get('financialStatus','legacy-review'),'Status':r['status'],'Payment Status':r.get('paymentStatus',''),
             'Created At':r['createdAt'],'Completed At':r.get('completedAt',''),'Cancelled At':r.get('cancelledAt',''),

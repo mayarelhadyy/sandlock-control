@@ -1,6 +1,6 @@
 """Private notification history and retryable Web Push, sharing the existing SQLite store."""
 import base64, hashlib, json, logging, secrets, threading, time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit
 from reservation_service import ReservationError, parse_time, iso
 
@@ -60,6 +60,37 @@ class Notifications:
             for sub in db.execute('SELECT subscription_id,channel FROM push_subscriptions WHERE user_id=? AND active=1',(uid,)):
                 db.execute('INSERT INTO notification_deliveries(notification_id,subscription_id,channel,state) VALUES(?,?,?,?)',(nid,sub[0],sub[1],'pending'))
             return [nid]
+        return self.store.transaction(save)
+
+
+    def reservation_time_alerts(self):
+        """Persist one 15-minute reminder and one user-facing grace warning per booking."""
+        now=datetime.fromtimestamp(self.clock(),timezone.utc)
+        stamp=iso(now)
+        def save(db):
+            created=[]
+            for reservation in self.store.rows(db):
+                if reservation['status'] not in ('Active','Overdue'):continue
+                end=parse_time(reservation['endTime'])
+                event_type=None;message=None
+                if end-timedelta(minutes=15) <= now < end:
+                    event_type='reservation-ending-soon'
+                    message=f"Locker {reservation['lockerId']} reservation ends in 15 minutes. Extend your time or end the reservation on time."
+                elif end <= now < end+timedelta(minutes=10):
+                    event_type='reservation-grace-period'
+                    # Product copy intentionally communicates 5 minutes; the backend
+                    # keeps a 10-minute technical grace period for connectivity issues.
+                    message=f"Locker {reservation['lockerId']} reservation has ended. Please finish within 5 minutes to avoid late fees."
+                if not event_type:continue
+                uid=self.reservations.owner(db,reservation['userId'])
+                if not db.execute("SELECT 1 FROM accounts WHERE user_id=? AND role='user'",(uid,)).fetchone():continue
+                if db.execute('SELECT 1 FROM notifications WHERE user_id=? AND booking_id=? AND event_type=? LIMIT 1',(uid,reservation['bookingId'],event_type)).fetchone():continue
+                nid=secrets.token_hex(16)
+                db.execute('INSERT INTO notifications VALUES(?,?,?,?,?,?,?,NULL)',(nid,uid,reservation['bookingId'],reservation['lockerId'],event_type,message,stamp))
+                for sub in db.execute('SELECT subscription_id,channel FROM push_subscriptions WHERE user_id=? AND active=1',(uid,)):
+                    db.execute('INSERT INTO notification_deliveries(notification_id,subscription_id,channel,state) VALUES(?,?,?,?)',(nid,sub[0],sub[1],'pending'))
+                created.append(nid)
+            return created
         return self.store.transaction(save)
 
     def history(self, identity, before=None):

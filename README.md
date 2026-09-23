@@ -5,14 +5,14 @@ SQLite is authoritative; Excel is the existing reporting projection. The User ap
 ## Railway production
 
 1. Deploy this folder with Python dependencies from `requirements.txt`. `railway.json` starts `python -B server.py`, using Waitress (four threads, one process). Remove an old conflicting Railway start-command override or set it to the same command. Do not use `flask run` or multiple application replicas with the current in-process MQTT/recovery workers.
-2. Set `SANDLOCK_RESERVATION_ORIGINS=https://sandlock-app.vercel.app` (exact origin, no trailing slash); `SANDLOCK_LOCAL_HTTP=0`; `SANDLOCK_COOKIE_PARTITIONED=1`; `SANDLOCK_TRUST_PROXY=1`; `SANDLOCK_HTTP_HOST=0.0.0.0`; `SANDLOCK_INITIALIZE_STORAGE=0`; `SANDLOCK_RESERVATION_WORKER=1`.
+2. Set `SANDLOCK_RESERVATION_ORIGINS=https://sandlock-app.vercel.app` (exact origin, no trailing slash); `SANDLOCK_LOCAL_HTTP=0`; `SANDLOCK_TRUST_PROXY=1`; `SANDLOCK_HTTP_HOST=0.0.0.0`; `SANDLOCK_INITIALIZE_STORAGE=0`; `SANDLOCK_RESERVATION_WORKER=1`.
 3. Railway supplies `PORT`; it overrides `SANDLOCK_HTTP_PORT`. Retain the existing persistent volume, `SANDLOCK_RESERVATION_DB` and `SANDLOCK_WORKBOOK` paths and existing storage markers. Do not replace a live workbook with the bundled blank template. Do not delete/recreate a database or enable initialization to bypass a storage error.
 4. Retain existing authorized private MQTT settings and `SANDLOCK_MQTT_ENABLED` deliberately. No broker credentials were changed or tested. Keep them server-side. `.env.example` is documentation, not an automatically loaded environment file.
 5. Proxy trust must be enabled only behind the Railway edge: the application trusts one forwarded host/protocol hop. Do not expose this listener directly to untrusted traffic with proxy trust enabled. Keep one service replica; rolling overlap/multi-replica device coordination is outside this update.
 
 Owner sign-in: https://sandlock-control-production.up.railway.app/static/login.html. Owner dashboard: `/` after signing in. Existing Admin accounts are preserved; no production account/default password was created. `SANDLOCK_USER_APP` is optional and not needed for the separate Vercel deployment.
 
-User cookies have a new `__Host-sandlock_user_session_v2` name with Secure/HttpOnly/SameSite=None/Partitioned attributes and seven-day expiry. Users sign in again once; reservations/accounts remain intact. Admin cookies remain separate, first-party, eight-hour maximum with the existing inactivity policy. CSRF tokens, session revocation, ownership checks and sensitive no-store responses are retained. CORS is allowed only on User routes for the configured origin, including relevant error responses; Admin APIs are not opened cross-origin.
+User cookies have a new `__Host-sandlock_user_session_v3` name with Secure/HttpOnly/SameSite=Lax, host-only (no Partitioned) attributes and seven-day expiry. Vercel forwards only the explicit User routes so the browser cookie belongs to the frontend origin. Users sign in again once; reservations/accounts remain intact. Admin cookies remain separate, first-party, eight-hour maximum with the existing inactivity policy. CSRF tokens, session revocation, ownership checks and sensitive no-store responses are retained. CORS is allowed only on User routes for the configured origin, including relevant error responses; Admin APIs are not opened cross-origin.
 
 ## Local regression tests (no production services)
 
@@ -59,9 +59,9 @@ Replace the placeholder with your real monitored email address, for example `mai
 - `SANDLOCK_VAPID_PRIVATE_KEY` = generated private key
 - `SANDLOCK_VAPID_SUBJECT` = your `mailto:` contact
 
-The file is NOT automatically loaded. Keep the key pair stable across deployments. Invalid/missing matching keys with push enabled fail startup explicitly. The default is `SANDLOCK_PUSH_ENABLED=0`: history works, external delivery is disabled. No Vercel environment or routing change is required; the public key comes through the authenticated backend API. Never expose the private key in frontend configuration.
+The file is NOT automatically loaded. Keep the key pair stable across deployments. Invalid/missing matching keys with push enabled fail startup explicitly. The default is `SANDLOCK_PUSH_ENABLED=0`: history works, external delivery is disabled. No Vercel secrets are required; deploy the included restricted User rewrites; the public key comes through the authenticated backend API. Never expose the private key in frontend configuration.
 
-Deploy the backend with the existing volume and normal single-process Waitress command, then the frontend. Users choose **Notifications → Enable Notifications** explicitly. Existing notification permission alone does not register a push subscription. The new worker release is `sandlock-notifications-v1` with `notifications-1` assets. Existing in-page reservation reminders remain in place; booking no longer triggers a permission prompt.
+Deploy the backend with the existing volume and normal single-process Waitress command, then the frontend. Users choose **Notifications → Enable Notifications** explicitly. Existing notification permission alone does not register a push subscription. The new worker release is `sandlock-same-origin-v1` with `same-origin-1` assets. Existing in-page reservation reminders remain in place; booking no longer triggers a permission prompt.
 
 The current MQTT input remains `sandlock/locker/A/door`; only explicit open/closed reports are used. The backend selects the started, non-terminal reservation for that locker and resolves its authenticated owner. It never uses a recipient/locker ID from the payload. Repeated identical door states and retained reports do not create duplicate alerts; open → closed → open creates distinct events. A first closed report establishes a baseline. Without device event IDs/verified timestamps, missed or out-of-order transitions and exact physical-event time cannot be certified; displayed dates/times are UTC backend receipt times converted to the viewing device's timezone.
 
@@ -81,3 +81,7 @@ node tests/browser.cjs
 ```
 
 All harnesses force real MQTT and Web Push off. Push transport, permission/subscription cases and door observations are simulated where needed. `tests/inject_notification.py` accepts only the fresh browser test paths under `tests/.runtime`; it cannot use the configured production store. See `SANDLOCK_NOTIFICATIONS_REPORT.md` for classifications and remaining verification.
+
+## Safari same-origin release
+
+Remove obsolete `SANDLOCK_COOKIE_PARTITIONED` if configured (it is no longer read). Keep the existing volume, storage paths, VAPID keys and `SANDLOCK_INITIALIZE_STORAGE=0`. Deploy backend then promptly frontend, then refresh/reopen and sign in again; the old cross-site frontend is incompatible with Lax cookies during this short coordinated rollout. Re-enable push for the new session. Do not disable Safari privacy protections. See `SANDLOCK_SAFARI_SAME_ORIGIN_AUTH_REPORT.md` for exact tests, routes and real-device acceptance. Earlier integration report cookie guidance is historical and superseded.

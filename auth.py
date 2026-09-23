@@ -3,6 +3,7 @@ import hashlib
 import secrets
 import re
 import time
+from datetime import datetime, timezone
 from werkzeug.security import generate_password_hash, check_password_hash
 from reservation_service import ReservationError
 
@@ -24,6 +25,9 @@ class Auth:
             CREATE TABLE IF NOT EXISTS legacy_owners (
               legacy_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, reviewed_by TEXT NOT NULL, reviewed_at REAL NOT NULL);
             ''')
+            cols={r['name'] for r in db.execute('PRAGMA table_info(accounts)').fetchall()}
+            if 'created_at' not in cols:
+                db.execute('ALTER TABLE accounts ADD COLUMN created_at TEXT')
 
     @staticmethod
     def public(row):
@@ -33,16 +37,21 @@ class Auth:
         login=str(body.get('login','')).strip().lower()
         password=body.get('password','')
         name=body.get('name',''); mobile=body.get('mobile','')
-        if not re.fullmatch(r'[a-z0-9_.-]{3,64}',login) or not isinstance(password,str) or not 12<=len(password)<=128:
-            raise ReservationError('Login must be 3–64 letters/digits/._-; password must be 12–128 characters')
-        if not isinstance(name,str) or not 2<=len(name.strip())<=120 or not isinstance(mobile,str) or len(mobile)>30:
+        password_min = 8 if role == 'user' else 12
+        if not re.fullmatch(r'[a-z0-9_.-]{3,64}',login) or not isinstance(password,str) or not password_min<=len(password)<=128:
+            raise ReservationError(f'Login must be 3–64 letters/digits/._-; password must be {password_min}–128 characters')
+        if not isinstance(name,str) or not 2<=len(name.strip())<=120:
+            raise ReservationError('Invalid profile')
+        if role == 'user' and (not isinstance(mobile,str) or not re.fullmatch(r'[0-9]{11}', mobile)):
+            raise ReservationError('Mobile number must be exactly 11 digits.')
+        if role != 'user' and (not isinstance(mobile,str) or len(mobile)>30):
             raise ReservationError('Invalid profile')
         uid='usr_'+secrets.token_hex(16)
         hashed=generate_password_hash(password,method='scrypt')
         def save(db):
             if db.execute('SELECT 1 FROM accounts WHERE login=?',(login,)).fetchone():
                 raise ReservationError('Login unavailable',409)
-            db.execute('INSERT INTO accounts VALUES (?,?,?,?,?,?)',(uid,login,hashed,role,name.strip(),mobile))
+            db.execute('INSERT INTO accounts(user_id,login,password_hash,role,name,mobile,created_at) VALUES (?,?,?,?,?,?,?)',(uid,login,hashed,role,name.strip(),mobile,datetime.now(timezone.utc).isoformat()))
             return self.public(db.execute('SELECT * FROM accounts WHERE user_id=?',(uid,)).fetchone())
         return self.store.transaction(save)
 
@@ -55,6 +64,21 @@ class Auth:
         token=secrets.token_urlsafe(32); csrf=secrets.token_urlsafe(32); now=self.clock()
         with self.store.connect() as db:
             db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?)',(digest(token),row['user_id'],kind,csrf,now+(28800 if kind=='admin' else 604800),now))
+        return token,csrf,self.public(row)
+
+
+    def demo_admin_session(self):
+        """Create/reuse an isolated local demo owner identity. Caller must gate this by config."""
+        login='sandlock-demo-owner'
+        with self.store.connect() as db:
+            row=db.execute("SELECT * FROM accounts WHERE login=? AND role='admin'",(login,)).fetchone()
+            if not row:
+                uid='usr_'+secrets.token_hex(16)
+                db.execute('INSERT INTO accounts(user_id,login,password_hash,role,name,mobile,created_at) VALUES (?,?,?,?,?,?,?)',(uid,login,generate_password_hash(secrets.token_urlsafe(32),method='scrypt'),'admin','Demo Owner','',datetime.now(timezone.utc).isoformat()))
+                row=db.execute('SELECT * FROM accounts WHERE user_id=?',(uid,)).fetchone()
+        token=secrets.token_urlsafe(32);csrf=secrets.token_urlsafe(32);now=self.clock()
+        with self.store.connect() as db:
+            db.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?)',(digest(token),row['user_id'],'admin',csrf,now+28800,now))
         return token,csrf,self.public(row)
 
     def resolve(self, token, kind):

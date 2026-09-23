@@ -44,3 +44,16 @@ table{font-size:12px}th{font-size:11px;color:#07585b}
 .grid2{grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))}
 .grid2>.card,.liveStats,.liveStats>div{min-width:0}
 .liveStats b{overflow-wrap:anywhere}
+
+/* Owner sign-in password visibility toggle. */
+.ownerPasswordWrap{position:relative;display:block}
+.ownerPasswordWrap input{padding-right:58px}
+.passwordToggle{position:absolute;right:3px;top:50%;transform:translateY(-50%);width:44px;height:44px;border:0;border-radius:11px;background:transparent;color:var(--deep);display:grid;place-items:center;cursor:pointer;font-size:20px;line-height:1;padding:0;touch-action:manipulation}
+.passwordToggle:hover{background:#eef5f2}
+.passwordToggle:focus-visible{outline:3px solid #064d54;outline-offset:2px}
+
+/* Cleaner owner navigation and temporary local demo entry. */
+.sidebar .nav{border-radius:14px;transition:background .18s ease,color .18s ease,transform .18s ease}
+.sidebar .nav.active{background:#e2f3ef;color:var(--teal)}
+.sidebar .nav:active{transform:scale(.98)}
+.demoDivider{display:flex;align-items:center;gap:10px;margin:18px 0 12px;color:#879391;font-size:12px}.demoDivider:before,.demoDivider:after{content:"";height:1px;background:#e1e7e4;flex:1}.demoLoginBtn{width:100%;min-height:48px}.demoHint{text-align:center!important;font-size:11px!important;margin:8px 0 0!important;color:#879391!important}

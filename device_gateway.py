@@ -77,7 +77,7 @@ class DeviceGateway:
             zone=self.zone(body);local=now.astimezone(zone)
             if action=='set':db.execute('UPDATE device_intents SET timezone=?,done=0 WHERE booking_id=?',(str(zone),booking_id))
             if action=='set':
-                self.send('reservation/set',dict(bookingId=booking_id,pin=r['pin'],startEpoch=int(start.timestamp()),endEpoch=int(end.timestamp()),startIso=r['startTime'],endIso=r['endTime'],localDate=start.astimezone(zone).strftime('%Y-%m-%d'),localStart=start.astimezone(zone).strftime('%H:%M'),localEnd=end.astimezone(zone).strftime('%H:%M'),reminderMinutes=15,lateFeeMultiplier=3,issuedAt=stamp),True)
+                self.send('reservation/set',dict(bookingId=booking_id,pin=r['pin'],startEpoch=int(start.timestamp()),endEpoch=int(end.timestamp()),startIso=r['startTime'],endIso=r['endTime'],localDate=start.astimezone(zone).strftime('%Y-%m-%d'),localStart=start.astimezone(zone).strftime('%H:%M'),localEnd=end.astimezone(zone).strftime('%H:%M'),reminderMinutes=15,graceMinutes=10,lateFeeMultiplier=3,issuedAt=stamp),True)
             self.send('time/set',dict(source='mobile-browser',epochMs=int(now.timestamp()*1000),epochSeconds=int(now.timestamp()),isoUtc=stamp,localDate=local.strftime('%Y-%m-%d'),localTime=local.strftime('%H:%M:%S'),timezoneOffsetMinutes=-int(local.utcoffset().total_seconds()/60),timezone=str(zone)),True)
             return {'published':True}
         if action=='set':
@@ -110,7 +110,7 @@ class DeviceGateway:
                 elif r['status'] in OPEN:
                     if not item['timezone']:continue
                     zone=ZoneInfo(item['timezone']);start,end=parse_time(r['startTime']),parse_time(r['endTime'])
-                    self.send('reservation/set',dict(bookingId=r['bookingId'],pin=r['pin'],startEpoch=int(start.timestamp()),endEpoch=int(end.timestamp()),startIso=r['startTime'],endIso=r['endTime'],localDate=start.astimezone(zone).strftime('%Y-%m-%d'),localStart=start.astimezone(zone).strftime('%H:%M'),localEnd=end.astimezone(zone).strftime('%H:%M'),reminderMinutes=15,lateFeeMultiplier=3,issuedAt=service.clock().isoformat()),True)
+                    self.send('reservation/set',dict(bookingId=r['bookingId'],pin=r['pin'],startEpoch=int(start.timestamp()),endEpoch=int(end.timestamp()),startIso=r['startTime'],endIso=r['endTime'],localDate=start.astimezone(zone).strftime('%Y-%m-%d'),localStart=start.astimezone(zone).strftime('%H:%M'),localEnd=end.astimezone(zone).strftime('%H:%M'),reminderMinutes=15,graceMinutes=10,lateFeeMultiplier=3,issuedAt=service.clock().isoformat()),True)
                     now=service.clock();local=now.astimezone(zone)
                     self.send('time/set',dict(source='mobile-browser',epochMs=int(now.timestamp()*1000),epochSeconds=int(now.timestamp()),isoUtc=now.isoformat(),localDate=local.strftime('%Y-%m-%d'),localTime=local.strftime('%H:%M:%S'),timezoneOffsetMinutes=-int(local.utcoffset().total_seconds()/60),timezone=str(zone)),True)
                 db.execute('UPDATE device_intents SET done=1 WHERE booking_id=?',(r['bookingId'],))
